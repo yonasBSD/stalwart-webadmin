@@ -76,6 +76,9 @@ pub const STATE_STORAGE_KEY: &str = "webadmin_state";
 pub const STATE_LOGIN_NAME_KEY: &str = "webadmin_login_name";
 
 fn main() {
+    core::schema::print_schemas(&build_schemas());
+    return;
+
     _ = console_log::init_with_level(log::Level::Debug);
     console_error_panic_hook::set_once();
     leptos::mount_to_body(|| view! { <App/> })

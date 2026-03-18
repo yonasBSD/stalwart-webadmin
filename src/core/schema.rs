@@ -4,9 +4,14 @@
  * SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-SEL
  */
 
-use std::{hash::Hasher, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    hash::Hasher,
+    sync::Arc,
+};
 
 use ahash::AHashMap;
+use serde_json::json;
 
 use super::form::{FormData, FormValue};
 
@@ -1022,5 +1027,407 @@ impl From<i64> for NumberType {
 impl From<f64> for NumberType {
     fn from(value: f64) -> Self {
         NumberType::Float(value)
+    }
+}
+
+#[derive(Default, Debug)]
+struct XObject {
+    fields: BTreeMap<String, XField>,
+    name_singular: String,
+    name_plural: String,
+    form: XForm,
+    list: XList,
+}
+
+#[derive(Default, Debug)]
+struct XField {
+    typ: String,
+    description: String,
+    required: bool,
+    array: bool,
+    flags: BTreeSet<String>,
+}
+
+#[derive(Default, Debug)]
+struct XForm {
+    title: String,
+    subtitle: String,
+    sections: Vec<XSection>,
+    actions: Vec<String>,
+}
+
+#[derive(Default, Debug)]
+struct XSection {
+    title: String,
+    fields: Vec<XLabel>,
+}
+
+#[derive(Default, Debug)]
+struct XLabel {
+    field: String,
+    label: String,
+    placeholder: String,
+}
+
+#[derive(Default, Debug)]
+struct XList {
+    title: String,
+    subtitle: String,
+    fields: Vec<XLabel>,
+    actions: Vec<String>,
+}
+
+pub fn print_schemas(schemas: &Schemas) {
+    let mut objects = BTreeMap::<String, XObject>::new();
+    let mut enums = Vec::new();
+    let mut enums_single = Vec::new();
+
+    for (this_id, schema) in &schemas.schemas {
+        let mut obj = XObject {
+            name_singular: schema.name_singular.to_string(),
+            name_plural: schema.name_plural.to_string(),
+            ..Default::default()
+        };
+
+        for field in schema.fields.values() {
+            let mut xfield = XField {
+                typ: match &field.typ_ {
+                    Type::Input => "String".to_string(),
+                    Type::Array(array_type) => match array_type {
+                        ArrayType::Text => "String".to_string(),
+                        ArrayType::Duration => "Duration".to_string(),
+                    },
+                    Type::Secret => "Secret".to_string(),
+                    Type::Text => "Text".to_string(),
+                    Type::Expression => "Expression".to_string(),
+                    Type::Select { source, .. } => match source {
+                        Source::Static(items) => {
+                            if let Some(pos) = enums.iter().position(|enums| enums == items) {
+                                format!("Enum{pos}")
+                            } else {
+                                let pos = enums.len();
+                                enums.push(*items);
+                                format!("Enum{pos}")
+                            }
+                        }
+                        Source::StaticId(items) => {
+                            if let Some(pos) = enums_single.iter().position(|enums| enums == items)
+                            {
+                                format!("EnumShort{pos}")
+                            } else {
+                                let pos = enums.len();
+                                enums_single.push(*items);
+                                format!("EnumShort{pos}")
+                            }
+                        }
+                        Source::Dynamic { schema, .. } => format!("@{}", schema.id),
+                        Source::DynamicSelf { .. } => format!("@{this_id}"),
+                    },
+                    Type::Boolean => "Boolean".to_string(),
+                    Type::Duration => "Duration".to_string(),
+                    Type::Rate => "Rate".to_string(),
+                    Type::Size => "Size".to_string(),
+                    Type::Cron => "Cron".to_string(),
+                },
+                array: matches!(
+                    field.typ_,
+                    Type::Array(_)
+                        | Type::Select {
+                            typ: SelectType::Many | SelectType::ManyWithSearch,
+                            ..
+                        }
+                ),
+                required: false,
+                flags: BTreeSet::new(),
+                description: field.help.unwrap_or_default().to_string(),
+            };
+
+            xfield.required = matches!(field.typ_, Type::Boolean | Type::Select { .. });
+
+            if field.readonly {
+                xfield.flags.insert("readonly".to_string());
+            }
+
+            if field.enterprise {
+                xfield.flags.insert("enterprise".to_string());
+            }
+
+            if let Some(checks) = field.checks.default.as_ref() {
+                for validator in &checks.validators {
+                    match validator {
+                        Validator::Required => {
+                            xfield.required = true;
+                        }
+                        Validator::IsEmail => {
+                            xfield.typ = "Email".to_string();
+                        }
+                        Validator::IsId => {
+                            xfield.typ = "Id".to_string();
+                        }
+                        Validator::IsHost => {
+                            xfield.typ = "Host".to_string();
+                        }
+                        Validator::IsDomain => {
+                            xfield.typ = "Domain".to_string();
+                        }
+                        Validator::IsPort => {
+                            xfield.typ = "Integer".to_string();
+                            xfield.flags.insert("min-value:1".to_string());
+                            xfield.flags.insert("max-value:65535".to_string());
+                        }
+                        Validator::IsIpOrMask => {
+                            xfield.typ = "IpMask".to_string();
+                        }
+                        Validator::IsUrl => {
+                            xfield.typ = "Url".to_string();
+                        }
+                        Validator::IsRegex => {
+                            xfield.typ = "Regex".to_string();
+                        }
+                        Validator::IsSocketAddr => {
+                            xfield.typ = "SocketAddr".to_string();
+                        }
+                        Validator::MinLength(v) => {
+                            xfield.flags.insert(format!("min-length:{}", v));
+                        }
+                        Validator::MaxLength(v) => {
+                            xfield.flags.insert(format!("max-length:{}", v));
+                        }
+                        Validator::MinValue(number_type) => match number_type {
+                            NumberType::Integer(v) => {
+                                xfield.typ = "Integer".to_string();
+                                xfield.flags.insert(format!("min-value:{}", v));
+                            }
+                            NumberType::Float(v) => {
+                                xfield.typ = "Float".to_string();
+                                xfield.flags.insert(format!("min-value:{}", v));
+                            }
+                        },
+                        Validator::MaxValue(number_type) => match number_type {
+                            NumberType::Integer(v) => {
+                                xfield.typ = "Integer".to_string();
+                                xfield.flags.insert(format!("max-value:{}", v));
+                            }
+                            NumberType::Float(v) => {
+                                xfield.typ = "Float".to_string();
+                                xfield.flags.insert(format!("max-value:{}", v));
+                            }
+                        },
+                        Validator::MinItems(v) => {
+                            xfield.flags.insert(format!("min-items:{}", v));
+                        }
+                        Validator::MaxItems(v) => {
+                            xfield.flags.insert(format!("max-items:{}", v));
+                        }
+                        Validator::IsValidExpression(expression_validator) => {
+                            let vars = expression_validator.variables.join(",");
+                            let consts = expression_validator.constants.join(",");
+                            if !vars.is_empty() {
+                                xfield.flags.insert(format!("expr-vars:{}", vars));
+                            }
+                            if !consts.is_empty() {
+                                xfield.flags.insert(format!("expr-consts:{}", consts));
+                            }
+                        }
+                    }
+                }
+
+                for transformer in &checks.transformers {
+                    match transformer {
+                        Transformer::Trim => {
+                            xfield.flags.insert("trim".to_string());
+                        }
+                        Transformer::RemoveSpaces => {
+                            xfield.flags.insert("no-spaces".to_string());
+                        }
+                        Transformer::Lowercase => {
+                            xfield.flags.insert("lowercase".to_string());
+                        }
+                        Transformer::Uppercase => {
+                            xfield.flags.insert("uppercase".to_string());
+                        }
+                        Transformer::HashSecret => {
+                            xfield.flags.insert("hash".to_string());
+                        }
+                    }
+                }
+            }
+
+            if let Some(default) = field.default.default.as_ref() {
+                let default = match default {
+                    FormValue::Value(v) => {
+                        if v == "true" || v == "false" {
+                            v.to_string()
+                        } else if let Ok(num) = v.parse::<i64>() {
+                            num.to_string()
+                        } else if let Ok(num) = v.parse::<f64>() {
+                            num.to_string()
+                        } else {
+                            json!(v).to_string()
+                        }
+                    }
+                    FormValue::Array(items) => json!(items).to_string(),
+                    FormValue::Expression(expression) => {
+                        json!(
+                            {
+                                "match": expression.if_thens.iter().map(|if_then| {
+                                    json!(
+                                        {
+                                            "if": if_then.if_,
+                                            "then": if_then.then_
+                                        }
+                                    )
+                                }
+                                ).collect::<Vec<_>>(),
+                                "else": expression.else_
+                            }
+                        )
+                    }
+                    .to_string(),
+                };
+                xfield.flags.insert(format!("default:{}", default));
+            }
+
+            obj.fields.insert(field.id.to_string(), xfield);
+        }
+
+        obj.form = XForm {
+            title: schema.form.title.to_string(),
+            subtitle: schema.form.subtitle.to_string(),
+            actions: schema
+                .form
+                .actions
+                .iter()
+                .map(|a| format!("{:?}", a))
+                .collect(),
+            sections: schema
+                .form
+                .sections
+                .iter()
+                .map(|section| {
+                    let mut xsection = XSection {
+                        title: section.title.unwrap_or_default().to_string(),
+                        fields: Vec::new(),
+                    };
+                    for field in &section.fields {
+                        xsection.fields.push(XLabel {
+                            field: field.id.to_string(),
+                            label: field.label_form.to_string(),
+                            placeholder: field.placeholder.default.unwrap_or_default().to_string(),
+                        });
+                    }
+                    xsection
+                })
+                .collect(),
+        };
+
+        obj.list = XList {
+            title: schema.list.title.to_string(),
+            subtitle: schema.list.subtitle.to_string(),
+            actions: schema
+                .list
+                .actions
+                .iter()
+                .map(|a| format!("{:?}", a))
+                .collect(),
+            fields: schema
+                .list
+                .fields
+                .iter()
+                .map(|field| XLabel {
+                    field: field.id.to_string(),
+                    label: field.label_column.to_string(),
+                    placeholder: Default::default(),
+                })
+                .collect(),
+        };
+
+        objects.insert(this_id.to_string(), obj);
+    }
+
+    for (name, object) in objects {
+        println!("# {}", name);
+
+        println!("## Schema");
+        for (field_name, field) in object.fields {
+            let nullability = if field.required { "" } else { "|null" };
+            let array = if field.array { "[]" } else { "" };
+            println!("- {}: {}{}{}", field_name, field.typ, array, nullability);
+            if !field.description.is_empty() {
+                println!("\t> {}", field.description);
+            }
+            for flag in field.flags {
+                println!("\t* {}", flag);
+            }
+        }
+        if !object.form.sections.is_empty() {
+            println!();
+            println!("## Form");
+            if !object.form.title.is_empty() {
+                println!("{}", object.form.title);
+            }
+            if !object.form.subtitle.is_empty() {
+                println!("> {}", object.form.subtitle);
+            }
+            for section in object.form.sections {
+                println!("### {}", section.title);
+                for field in section.fields {
+                    if !field.placeholder.is_empty() {
+                        println!(
+                            "- {}: {}\n\t> {}",
+                            field.field, field.label, field.placeholder
+                        );
+                    } else {
+                        println!("- {}: {}", field.field, field.label);
+                    }
+                }
+            }
+        }
+
+        if !object.list.fields.is_empty() {
+            println!();
+            println!("## List");
+            if !object.list.title.is_empty() {
+                println!("{}", object.list.title);
+            }
+            if !object.list.subtitle.is_empty() {
+                println!("> {}", object.list.subtitle);
+            }
+            if !object.name_singular.is_empty() {
+                println!("- singular: {}", object.name_singular);
+            }
+            if !object.name_plural.is_empty() {
+                println!("- plural: {}", object.name_plural);
+            }
+            println!("### Columns");
+            for field in object.list.fields {
+                println!("- {}: {}", field.field, field.label);
+            }
+            if !object.list.actions.is_empty() {
+                println!("### Actions");
+                for action in object.list.actions {
+                    println!("- {}", action);
+                }
+            }
+        }
+        println!();
+    }
+
+    for (i, items) in enums.iter().enumerate() {
+        println!("# Enum{}", i);
+        println!("## Variants");
+        for (key, description) in *items {
+            println!("- {}: {}", key, description);
+        }
+        println!();
+    }
+
+    for (i, items) in enums_single.iter().enumerate() {
+        println!("# EnumShort{}", i);
+        println!("## Variants");
+        for key in *items {
+            println!("- {}", key);
+        }
+        println!();
     }
 }
