@@ -10,6 +10,11 @@
 
 <br>
 
+> [!IMPORTANT]
+> **This repository has been archived.** The WebAdmin UI has been moved to a new repository at [stalwartlabs/webui](https://github.com/stalwartlabs/webui), which is a rewrite from scratch where most if not all open issues have been fixed. Please upgrade to Stalwart v0.16 by following the instructions at [UPGRADING/v0_16.md](https://github.com/stalwartlabs/stalwart/blob/main/UPGRADING/v0_16.md).
+
+<br>
+
 <p align="center">
   <a href="https://github.com/stalwartlabs/webadmin/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/stalwartlabs/webadmin/build.yml?style=flat-square" alt="continuous integration"></a>
   &nbsp;
